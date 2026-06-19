@@ -1,0 +1,10 @@
+name: LoyalTide
+version: '${project.version}'
+main: dev.loyaltide.LoyalTidePlugin
+api-version: '1.21'
+description: Allows Loyalty and Riptide to coexist on a Trident
+authors: [ LoyalTide ]
+website: https://github.com/loyaltide
+
+commands: {}
+permissions: {}
