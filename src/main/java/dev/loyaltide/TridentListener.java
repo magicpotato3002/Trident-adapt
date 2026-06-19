@@ -1,199 +1,174 @@
 package dev.loyaltide;
 
-import org.bukkit.GameMode;
-import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.*;
+import org.bukkit.entity.Player;
+import org.bukkit.entity.Trident;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.ProjectileLaunchEvent;
-import org.bukkit.event.entity.ProjectileHitEvent;
-import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.inventory.PrepareAnvilEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerRiptideEvent;
+import org.bukkit.inventory.AnvilInventory;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.metadata.FixedMetadataValue;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.util.Vector;
 
-import java.util.UUID;
+public class TridentListener implements Listener {
 
-/**
- * Core logic for Loyalty + Riptide coexistence.
- *
- * ┌─────────────────────────────────────────────────────────────────────────┐
- * │  RULES (only applied when trident has BOTH Loyalty ≥1 AND Riptide ≥1)  │
- * ├─────────────────────────────────────────────────────────────────────────┤
- * │ MAINHAND + IN WATER  → Riptide (vanilla)                                │
- * │ MAINHAND + NOT water → Loyalty  (cancel Riptide, throw normally)        │
- * │ OFFHAND              → Loyalty  (always – cancel any Riptide attempt)   │
- * └─────────────────────────────────────────────────────────────────────────┘
- *
- * Implementation strategy
- * -----------------------
- * Riptide launches the player via a ProjectileLaunchEvent where the
- * projectile is a Trident entity. We inspect the shooter and the hand
- * that threw it to decide whether to allow or cancel the Riptide effect.
- *
- * Loyalty return is vanilla and does NOT need to be replicated here – if
- * Riptide is cancelled the trident simply stays in the player's hand or
- * falls to the ground, and Loyalty will pull it back normally.
- *
- * The OFFHAND rule: vanilla does not allow Riptide from offhand by default,
- * so we only need to ensure we never accidentally enable it. The mainhand
- * "not in water" path requires us to cancel the launch event so the trident
- * behaves like a Loyalty throw.
- *
- * No item mutation, no NBT, no scheduled tasks.
- */
-public final class TridentListener implements Listener {
-
-    /** Metadata key stored transiently on Trident entities we process. */
-    private static final String META_LOYALTIDE = "loyaltide_loyalty_mode";
-
-    private final LoyalTidePlugin plugin;
-
-    public TridentListener(LoyalTidePlugin plugin) {
-        this.plugin = plugin;
+    private int getEnchantLevel(ItemStack item, Enchantment enchant) {
+        if (item == null || item.getType() == Material.AIR) return 0;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return 0;
+        if (meta instanceof EnchantmentStorageMeta storageMeta) {
+            return storageMeta.getStoredEnchantLevel(enchant);
+        }
+        return meta.getEnchantLevel(enchant);
     }
 
-    // =========================================================================
-    // Intercept the Riptide launch
-    // =========================================================================
+    private boolean hasBothEnchants(ItemStack item) {
+        if (item == null || item.getType() != Material.TRIDENT) return false;
+        return getEnchantLevel(item, Enchantment.LOYALTY) >= 1 && getEnchantLevel(item, Enchantment.RIPTIDE) >= 1;
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onPrepareAnvil(PrepareAnvilEvent event) {
+        AnvilInventory inv = event.getInventory();
+        ItemStack left = inv.getFirstItem();
+        ItemStack right = inv.getSecondItem();
+
+        if (left == null || right == null) return;
+
+        boolean isLeftValid = left.getType() == Material.TRIDENT || left.getType() == Material.ENCHANTED_BOOK;
+        if (!isLeftValid) return;
+
+        int leftLoyalty = getEnchantLevel(left, Enchantment.LOYALTY);
+        int leftRiptide = getEnchantLevel(left, Enchantment.RIPTIDE);
+        int rightLoyalty = getEnchantLevel(right, Enchantment.LOYALTY);
+        int rightRiptide = getEnchantLevel(right, Enchantment.RIPTIDE);
+
+        int finalLoyalty = Math.max(leftLoyalty, rightLoyalty);
+        if (leftLoyalty == rightLoyalty && leftLoyalty > 0) finalLoyalty = leftLoyalty + 1;
+
+        int finalRiptide = Math.max(leftRiptide, rightRiptide);
+        if (leftRiptide == rightRiptide && leftRiptide > 0) finalRiptide = leftRiptide + 1;
+
+        if ((finalLoyalty > 0 && finalRiptide > 0) || (leftLoyalty > 0 && rightRiptide > 0) || (leftRiptide > 0 && rightLoyalty > 0)) {
+            ItemStack result = left.clone();
+            if (result.getType() == Material.TRIDENT) {
+                ItemMeta meta = result.getItemMeta();
+                if (meta != null) {
+                    if (finalLoyalty > 0) meta.addEnchant(Enchantment.LOYALTY, finalLoyalty, true);
+                    if (finalRiptide > 0) meta.addEnchant(Enchantment.RIPTIDE, finalRiptide, true);
+                    result.setItemMeta(meta);
+                }
+            } else {
+                EnchantmentStorageMeta meta = (EnchantmentStorageMeta) result.getItemMeta();
+                if (meta != null) {
+                    if (finalLoyalty > 0) meta.addStoredEnchant(Enchantment.LOYALTY, finalLoyalty, true);
+                    if (finalRiptide > 0) meta.addStoredEnchant(Enchantment.RIPTIDE, finalRiptide, true);
+                    result.setItemMeta(meta);
+                }
+            }
+            event.setResult(result);
+        }
+    }
 
     /**
-     * Called when any projectile is launched. We intercept Trident entities
-     * thrown by a Player and apply our logic.
-     *
-     * Priority HIGHEST so we run after other plugins but still before
-     * the default server processing of the result.
+     * SỬA LỖI CHÍNH: Ép hệ thống nhận diện hành động ném khi dùng ngoài nước hoặc tay phụ
      */
-    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onPlayerInteract(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        
+        Player player = event.getPlayer();
+        EquipmentSlot hand = event.getHand();
+        if (hand == null) return;
+
+        ItemStack item = event.getItem();
+        if (!hasBothEnchants(item)) return;
+
+        boolean isInWater = player.isInWater() || player.getWorld().hasStorm();
+
+        // Trường hợp 1: Cầm ở tay phụ (Offhand) -> LUÔN LÀ LOYALTY (bất kể trong hay ngoài nước)
+        // Trường hợp 2: Cầm ở tay chính nhưng ở TRÊN CẠN -> PHẢI LÀ LOYALTY
+        if (hand == EquipmentSlot.OFF_HAND || (hand == EquipmentSlot.HAND && !isInWater)) {
+            // Đánh lừa hệ thống bằng cách tạo một thực thể Đinh ba ném đi thủ công
+            // vì vanilla sẽ chặn cứng hành vi chuột phải đinh ba Riptide khi không có nước.
+            
+            event.setCancelled(true); // Chặn hành động vanilla (Riptide bị lỗi/không hoạt động)
+
+            // Tính toán hướng ném dựa trên hướng nhìn của người chơi
+            Location launchLoc = player.getEyeLocation();
+            Vector velocity = launchLoc.getDirection().multiply(2.5); // Tốc độ bay vanilla của đinh ba
+
+            // Tạo thực thể Đinh ba bay đi
+            Trident trident = player.getWorld().spawn(launchLoc, Trident.class);
+            trident.setShooter(player);
+            trident.setVelocity(velocity);
+            trident.setItemStack(item.clone());
+            
+            // Ép trạng thái nhặt của mũi tên sang trạng thái được phép nhặt (DISALLOWED / ALLOWED tùy bạn muốn)
+            trident.setPickupStatus(org.bukkit.entity.AbstractArrow.PickupStatus.ALLOWED);
+
+            // Trừ độ bền của Đinh ba giống như vanilla khi ném (1 độ bền)
+            if (player.getGameMode() != org.bukkit.GameMode.CREATIVE) {
+                org.bukkit.inventory.meta.Damageable damageable = (org.bukkit.inventory.meta.Damageable) item.getItemMeta();
+                if (damageable != null) {
+                    damageable.setDamage(damageable.getDamage() + 1);
+                    item.setItemMeta(damageable);
+                    if (damageable.getDamage() >= item.getType().getMaxDurability()) {
+                        item.setAmount(0);
+                        player.playSound(player.getLocation(), org.bukkit.Sound.ENTITY_ITEM_BREAK, 1.0F, 1.0F);
+                    }
+                }
+            }
+            
+            // Phát âm thanh tiếng ném đinh ba vanilla
+            player.getWorld().playSound(player.getLocation(), org.bukkit.Sound.ITEM_TRIDENT_THROW, 1.0F, 1.0F);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onPlayerRiptide(PlayerRiptideEvent event) {
+        Player player = event.getPlayer();
+        ItemStack mainHand = player.getInventory().getItemInMainHand();
+        ItemStack offHand = player.getInventory().getItemInOffHand();
+
+        boolean mainHasBoth = hasBothEnchants(mainHand);
+        boolean offHasBoth = hasBothEnchants(offHand);
+
+        // Offhand luôn là Loyalty, chặn đứng nếu Riptide cố kích hoạt ở Offhand
+        if (offHasBoth && !mainHasBoth) {
+            event.setCancelled(true);
+            return;
+        }
+
+        // Trên cạn thì chặn Riptide
+        if (mainHasBoth && !player.isInWater() && !player.getWorld().hasStorm()) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onProjectileLaunch(ProjectileLaunchEvent event) {
         if (!(event.getEntity() instanceof Trident trident)) return;
         if (!(trident.getShooter() instanceof Player player)) return;
 
-        // Determine which hand the trident came from.
-        // Paper exposes getHand() on some projectiles; for Trident we can
-        // also check which hand holds a Trident item at launch time.
-        ItemStack mainHandItem = player.getInventory().getItemInMainHand();
-        ItemStack offHandItem  = player.getInventory().getItemInOffHand();
+        ItemStack thrownTrident = trident.getItemStack();
+        if (!hasBothEnchants(thrownTrident)) return;
 
-        boolean thrownFromMain = isTrident(mainHandItem);
-        boolean thrownFromOff  = isTrident(offHandItem) && !thrownFromMain;
-
-        // Get the actual item used (prefer main hand).
-        ItemStack usedItem = thrownFromMain ? mainHandItem : offHandItem;
-
-        if (usedItem == null || !isTrident(usedItem)) return;
-        if (!TridentUtil.isDualEnchanted(usedItem)) return;
-
-        // --- Apply rules ---
-
-        if (thrownFromOff) {
-            // OFFHAND → always Loyalty behaviour.
-            // Vanilla wouldn't normally launch Riptide from offhand, but
-            // just in case another plugin or future version allows it, cancel.
-            if (isRiptideLaunch(trident, player)) {
+        // Nếu dưới nước mà tay chính cố tình ném đinh ba ra thực thể (trong khi đáng lẽ phải bay Riptide) -> Hủy thực thể ném
+        if (player.isInWater() || player.getWorld().hasStorm()) {
+            ItemStack mainHand = player.getInventory().getItemInMainHand();
+            if (mainHand.isSimilar(thrownTrident)) {
                 event.setCancelled(true);
             }
-            return;
         }
-
-        // MAINHAND
-        boolean inWater = TridentUtil.isInWater(player);
-
-        if (inWater) {
-            // MAINHAND + IN WATER → Riptide vanilla. Allow.
-            return;
-        }
-
-        // MAINHAND + NOT IN WATER → Loyalty. Cancel Riptide propulsion.
-        if (isRiptideLaunch(trident, player)) {
-            event.setCancelled(true);
-            // Trigger a vanilla-style loyalty throw instead:
-            launchLoyaltyThrow(player, usedItem);
-        }
-    }
-
-    // =========================================================================
-    // Loyalty throw simulation (when Riptide is suppressed on dry land)
-    // =========================================================================
-
-    /**
-     * Simulates a vanilla Loyalty trident throw.
-     * The trident item leaves the player's hand and gets a Loyalty return.
-     * We spawn a Trident entity with the same item, pointing in the look
-     * direction. Vanilla Loyalty handling then returns it automatically
-     * because the entity was spawned with hasBeenDealtDamage=false.
-     */
-    private void launchLoyaltyThrow(Player player, ItemStack tridentItem) {
-        // Vanilla throw: spawn a trident entity in look direction.
-        Location eye = player.getEyeLocation();
-        Vector direction = eye.getDirection().normalize();
-
-        // Use the world's spawnEntity to get a Trident entity we can configure.
-        Trident loyaltyTrident = (Trident) player.getWorld().spawnEntity(
-                eye.add(direction.clone().multiply(1.5)),
-                EntityType.TRIDENT
-        );
-
-        loyaltyTrident.setShooter(player);
-        loyaltyTrident.setItem(tridentItem.clone());
-        loyaltyTrident.setVelocity(direction.multiply(2.5));
-        loyaltyTrident.setPickupStatus(AbstractArrow.PickupStatus.DISALLOWED);
-        // Loyalty level: read from item
-        int loyaltyLevel = tridentItem.getEnchantmentLevel(Enchantment.LOYALTY);
-        loyaltyTrident.setLoyaltyLevel(loyaltyLevel);
-
-        // Mark that we spawned this so other listeners can identify it.
-        loyaltyTrident.setMetadata(META_LOYALTIDE,
-                new FixedMetadataValue(plugin, player.getUniqueId().toString()));
-
-        // Remove one trident from the player's hand (simulate the throw).
-        if (player.getGameMode() != GameMode.CREATIVE) {
-            ItemStack hand = player.getInventory().getItemInMainHand();
-            if (hand != null && hand.getAmount() > 1) {
-                hand.setAmount(hand.getAmount() - 1);
-                player.getInventory().setItemInMainHand(hand);
-            } else {
-                player.getInventory().setItemInMainHand(null);
-            }
-        }
-    }
-
-    // =========================================================================
-    // Helpers
-    // =========================================================================
-
-    private static boolean isTrident(ItemStack item) {
-        return item != null && item.getType() == Material.TRIDENT;
-    }
-
-    /**
-     * Heuristic: a Riptide launch gives the trident very high vertical/
-     * forward velocity and does NOT leave the item in the player's hand.
-     * More reliably: we check whether the Trident entity has the Riptide
-     * enchant active. Paper's Trident API exposes this via
-     * {@link Trident#hasGlint()} being true and velocity being player-relative.
-     *
-     * The cleanest check is simply: did the player just leave the ground
-     * or are they in water? If IN water → Riptide. Otherwise → this method
-     * is called only when we already determined NOT in water.
-     *
-     * For our purposes: if we reach here, the player is NOT in water, so
-     * any Trident launch from a dual-enchanted item IS a Riptide attempt
-     * that we want to convert to Loyalty.
-     */
-    private static boolean isRiptideLaunch(Trident trident, Player player) {
-        // If the player is not in water but a Riptide trident entity spawned,
-        // it must be a Riptide launch attempt. We detect this by checking that
-        // the trident's velocity is aligned with the player's look vector
-        // (i.e., the server launched it with Riptide propulsion).
-        // A loyalty throw would not have extreme Y velocity.
-        Vector vel = trident.getVelocity();
-        // Riptide launches produce high combined speed
-        return vel.lengthSquared() > 1.0;
     }
 }
