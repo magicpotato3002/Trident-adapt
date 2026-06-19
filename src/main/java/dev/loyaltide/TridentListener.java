@@ -1,5 +1,6 @@
 package dev.loyaltide;
 
+import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Player;
@@ -79,9 +80,6 @@ public class TridentListener implements Listener {
         }
     }
 
-    /**
-     * SỬA LỖI CHÍNH: Ép hệ thống nhận diện hành động ném khi dùng ngoài nước hoặc tay phụ
-     */
     @EventHandler(priority = EventPriority.LOWEST)
     public void onPlayerInteract(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
@@ -93,30 +91,28 @@ public class TridentListener implements Listener {
         ItemStack item = event.getItem();
         if (!hasBothEnchants(item)) return;
 
+        // Chỉ xử lý đúng tay đang click để tránh bị kích hoạt lặp lại 2 lần (MCHand + OffHand)
+        if (hand == EquipmentSlot.HAND && player.getInventory().getItemInMainHand().getType() != Material.TRIDENT) return;
+        if (hand == EquipmentSlot.OFF_HAND && player.getInventory().getItemInOffHand().getType() != Material.TRIDENT) return;
+
         boolean isInWater = player.isInWater() || player.getWorld().hasStorm();
 
-        // Trường hợp 1: Cầm ở tay phụ (Offhand) -> LUÔN LÀ LOYALTY (bất kể trong hay ngoài nước)
-        // Trường hợp 2: Cầm ở tay chính nhưng ở TRÊN CẠN -> PHẢI LÀ LOYALTY
+        // Offhand luôn là Loyalty, hoặc Mainhand khi ở trên cạn
         if (hand == EquipmentSlot.OFF_HAND || (hand == EquipmentSlot.HAND && !isInWater)) {
-            // Đánh lừa hệ thống bằng cách tạo một thực thể Đinh ba ném đi thủ công
-            // vì vanilla sẽ chặn cứng hành vi chuột phải đinh ba Riptide khi không có nước.
-            
-            event.setCancelled(true); // Chặn hành động vanilla (Riptide bị lỗi/không hoạt động)
+            event.setCancelled(true);
 
-            // Tính toán hướng ném dựa trên hướng nhìn của người chơi
             Location launchLoc = player.getEyeLocation();
-            Vector velocity = launchLoc.getDirection().multiply(2.5); // Tốc độ bay vanilla của đinh ba
+            Vector velocity = launchLoc.getDirection().multiply(2.5); // Tốc độ bay vanilla
 
-            // Tạo thực thể Đinh ba bay đi
             Trident trident = player.getWorld().spawn(launchLoc, Trident.class);
             trident.setShooter(player);
             trident.setVelocity(velocity);
             trident.setItemStack(item.clone());
             
-            // Ép trạng thái nhặt của mũi tên sang trạng thái được phép nhặt (DISALLOWED / ALLOWED tùy bạn muốn)
+            // Đặt trạng thái nhặt để Loyalty hoạt động chính xác khi quay về
             trident.setPickupStatus(org.bukkit.entity.AbstractArrow.PickupStatus.ALLOWED);
 
-            // Trừ độ bền của Đinh ba giống như vanilla khi ném (1 độ bền)
+            // Giảm độ bền item
             if (player.getGameMode() != org.bukkit.GameMode.CREATIVE) {
                 org.bukkit.inventory.meta.Damageable damageable = (org.bukkit.inventory.meta.Damageable) item.getItemMeta();
                 if (damageable != null) {
@@ -129,7 +125,6 @@ public class TridentListener implements Listener {
                 }
             }
             
-            // Phát âm thanh tiếng ném đinh ba vanilla
             player.getWorld().playSound(player.getLocation(), org.bukkit.Sound.ITEM_TRIDENT_THROW, 1.0F, 1.0F);
         }
     }
@@ -143,13 +138,11 @@ public class TridentListener implements Listener {
         boolean mainHasBoth = hasBothEnchants(mainHand);
         boolean offHasBoth = hasBothEnchants(offHand);
 
-        // Offhand luôn là Loyalty, chặn đứng nếu Riptide cố kích hoạt ở Offhand
         if (offHasBoth && !mainHasBoth) {
             event.setCancelled(true);
             return;
         }
 
-        // Trên cạn thì chặn Riptide
         if (mainHasBoth && !player.isInWater() && !player.getWorld().hasStorm()) {
             event.setCancelled(true);
         }
@@ -163,7 +156,6 @@ public class TridentListener implements Listener {
         ItemStack thrownTrident = trident.getItemStack();
         if (!hasBothEnchants(thrownTrident)) return;
 
-        // Nếu dưới nước mà tay chính cố tình ném đinh ba ra thực thể (trong khi đáng lẽ phải bay Riptide) -> Hủy thực thể ném
         if (player.isInWater() || player.getWorld().hasStorm()) {
             ItemStack mainHand = player.getInventory().getItemInMainHand();
             if (mainHand.isSimilar(thrownTrident)) {
