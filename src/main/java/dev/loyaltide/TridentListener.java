@@ -142,7 +142,7 @@ public final class TridentListener implements Listener {
         loyaltyTrident.setShooter(player);
         loyaltyTrident.setItem(tridentItem.clone());
         loyaltyTrident.setVelocity(direction.multiply(2.5));
-        loyaltyTrident.setPickupStatus(AbstractArrow.PickupStatus.NOT_ALLOWED);
+        loyaltyTrident.setPickupStatus(AbstractArrow.PickupStatus.DISALLOWED);
         // Loyalty level: read from item
         int loyaltyLevel = tridentItem.getEnchantmentLevel(Enchantment.LOYALTY);
         loyaltyTrident.setLoyaltyLevel(loyaltyLevel);
